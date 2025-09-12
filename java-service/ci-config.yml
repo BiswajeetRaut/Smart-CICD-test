@@ -1,0 +1,9 @@
+build: mvn clean install -DskipTests
+
+tests:
+  unit: mvn test -Dtest=*UnitTest
+  integration: mvn test -Dtest=*IntegrationTest
+
+deploy:
+  staging: echo "Deploying java-service to staging..."
+  production: echo "Deploying java-service to production..."
