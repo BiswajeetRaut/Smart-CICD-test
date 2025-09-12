@@ -43,7 +43,7 @@ jobs:
         run: |
           echo "### Detecting impacted components ###"
           CHANGED=$(cat changes.txt)
-          COMPONENTS=""
+          COMPONENTS=()
           DEPS=$(cat dependencies.json)
 
           echo "" > impact.log
@@ -71,13 +71,15 @@ jobs:
               done
             done
 
-            UNIQUE_IMPACTED=$(printf "%s\n" "${NEW_IMPACTED[@]}" | sort -u | xargs)
-            COMPONENTS="$COMPONENTS $UNIQUE_IMPACTED"
+            # Deduplicate + trim
+            UNIQUE_IMPACTED=$(printf "%s\n" "${NEW_IMPACTED[@]}" | grep -v '^$' | sort -u | xargs)
+            COMPONENTS+=($UNIQUE_IMPACTED)
 
-            echo "$FILE → [${UNIQUE_IMPACTED}]" >> impact.log
+            echo "$FILE → [$UNIQUE_IMPACTED]" >> impact.log
           done
 
-          UNIQUE=$(echo $COMPONENTS | tr ' ' '\n' | grep -v '^$' | sort -u | jq -R . | jq -s .)
+          # Final dedupe & format as JSON array
+          UNIQUE=$(printf "%s\n" "${COMPONENTS[@]}" | grep -v '^$' | sort -u | jq -R . | jq -s .)
 
           if [ -z "$UNIQUE" ] || [ "$UNIQUE" = "[]" ]; then
             echo "⚠️ No impacted components detected."
