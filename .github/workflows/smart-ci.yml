@@ -19,22 +19,33 @@ jobs:
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y yq jq
 
+      # - name: Get changed files
+      #   id: changes
+      #   run: |
+      #     echo "Detecting changed files..."
+      #     if [ "${{ github.event_name }}" = "pull_request" ]; then
+      #       git fetch origin ${{ github.base_ref }} --depth=1
+      #       git diff --name-only origin/${{ github.base_ref }}...HEAD > changes.txt
+      #     else
+      #       if git rev-parse HEAD~1 >/dev/null 2>&1; then
+      #         git diff --name-only HEAD~1 HEAD > changes.txt
+      #       else
+      #         git ls-files > changes.txt
+      #       fi
+      #     fi
+      #     echo "Changed files detected:"
+      #     cat changes.txt
+
       - name: Get changed files
         id: changes
         run: |
           echo "Detecting changed files..."
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch origin ${{ github.base_ref }} --depth=1
-            git diff --name-only origin/${{ github.base_ref }}...HEAD > changes.txt
-          else
-            if git rev-parse HEAD~1 >/dev/null 2>&1; then
-              git diff --name-only HEAD~1 HEAD > changes.txt
-            else
-              git ls-files > changes.txt
-            fi
-          fi
+          echo "" > changes.txt
+          jq -r '.commits[].added[], .commits[].modified[], .commits[].removed[]' <<< '${{ toJson(github.event) }}' \
+            | sort -u >> changes.txt
           echo "Changed files detected:"
           cat changes.txt
+
 
       - name: Detect impacted components
         id: detect
