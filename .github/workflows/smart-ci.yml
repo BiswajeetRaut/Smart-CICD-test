@@ -59,13 +59,18 @@ jobs:
               DIR=$(dirname "$DIR")
             done
 
-            # Dependency expansion
+            # Dependency expansion (using jq because DEPS is JSON)
             NEW_IMPACTED=()
             for COMP in "${IMPACTED[@]}"; do
+              echo "Checking impacted component: $COMP" >> impact.log
               NEW_IMPACTED+=("$COMP")
-              for OTHER in $(echo $DEPS | jq -r 'keys[]'); do
-                if echo $DEPS | jq -e ".\"$OTHER\" | index(\"$COMP\")" > /dev/null; then
+              for OTHER in $(echo "$DEPS" | jq -r 'keys[]'); do
+                echo "  Does $OTHER depend on $COMP ?" >> impact.log
+                if echo "$DEPS" | jq -e ".\"$OTHER\" | index(\"$COMP\")" > /dev/null; then
+                  echo "    ✅ Yes, adding $OTHER" >> impact.log
                   NEW_IMPACTED+=("$OTHER")
+                else
+                  echo "    ❌ No" >> impact.log
                 fi
               done
             done
@@ -74,7 +79,7 @@ jobs:
             echo "$FILE → [$(printf "%s " "${NEW_IMPACTED[@]}" | xargs)]" >> impact.log
           done
 
-          VALID_KEYS=$(echo $DEPS | jq -r 'keys[]')
+          VALID_KEYS=$(echo "$DEPS" | jq -r 'keys[]')
           FILTERED=$(sort -u $COMPONENTS_FILE | grep -v '^$' | grep -Fxf <(echo "$VALID_KEYS"))
           UNIQUE=$(echo "$FILTERED" | jq -R . | jq -s -c .)
 
@@ -86,6 +91,7 @@ jobs:
           echo "components=$UNIQUE" >> $GITHUB_OUTPUT
           echo "### Changed file → Impacted components table ###"
           cat impact.log || true
+
 
       - name: Upload impact report
         uses: actions/upload-artifact@v4
