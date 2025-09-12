@@ -25,8 +25,8 @@ jobs:
           echo "Detecting changed files..."
           echo "" > changes.txt
 
-          # Try from event payload first
-          FILES=$(jq -r '[.commits[].added[], .commits[].modified[], .commits[].removed[]] | unique | .[]?' <<< '${{ toJson(github.event) }}')
+          # Try to pull changed files from event payload (if available)
+          FILES=$(jq -r '[.commits[]? | .added[], .modified[], .removed[]] | unique | .[]?' <<< '${{ toJson(github.event) }}')
 
           if [ -n "$FILES" ]; then
             echo "$FILES" > changes.txt
@@ -42,6 +42,7 @@ jobs:
             echo "Changed files detected:"
             cat changes.txt
           fi
+
 
       - name: Detect impacted components
         id: detect
