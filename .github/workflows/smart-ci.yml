@@ -220,6 +220,14 @@ jobs:
       matrix:
         component: ${{ fromJson(needs.detect-components.outputs.components-json) }}
     steps:
+      - name: Debug Matrix
+        run: |
+          echo "=== MATRIX DEBUG ==="
+          echo "Component: ${{ matrix.component }}"
+          echo "Components JSON from detect job: ${{ needs.detect-components.outputs.components-json }}"
+          echo "Has changes: ${{ needs.detect-components.outputs.has-changes }}"
+          echo "==================="
+
       - name: Checkout code
         uses: actions/checkout@v4
 
