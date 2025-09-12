@@ -18,6 +18,7 @@ jobs:
         run: |
           git fetch origin main
           git diff --name-only origin/main...HEAD > changes.txt
+          echo "Changed files:"
           cat changes.txt
 
       - name: Detect impacted components
@@ -38,11 +39,18 @@ jobs:
             done
           done
 
-          UNIQUE=$(echo $COMPONENTS | tr ' ' '\n' | sort -u | jq -R . | jq -s .)
+          # Remove duplicates, ensure JSON array, fallback to []
+          UNIQUE=$(echo $COMPONENTS | tr ' ' '\n' | grep -v '^$' | sort -u | jq -R . | jq -s .)
+          if [ -z "$UNIQUE" ] || [ "$UNIQUE" = "null" ]; then
+            UNIQUE="[]"
+          fi
+
+          echo "Detected impacted components: $UNIQUE"
           echo "components=$UNIQUE" >> $GITHUB_OUTPUT
 
   build:
     needs: detect-components
+    if: needs.detect-components.outputs.components != '[]'
     runs-on: ubuntu-latest
     strategy:
       matrix:
