@@ -1,9 +1,10 @@
-name: Smart CI
+name: Smart CI/CD (MVP1)
 
 on:
   push:
     branches:
       - main
+      - '**'
   pull_request:
 
 jobs:
@@ -15,27 +16,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y yq jq
+
       - name: Get changed files
         id: changes
         run: |
           echo "Detecting changed files..."
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "Comparing PR branch with base branch: ${{ github.base_ref }}"
             git fetch origin ${{ github.base_ref }} --depth=1
             git diff --name-only origin/${{ github.base_ref }}...HEAD > changes.txt
           else
-            echo "Push event detected"
             if git rev-parse HEAD~1 >/dev/null 2>&1; then
-              echo "Comparing last commit with previous commit"
               git diff --name-only HEAD~1 HEAD > changes.txt
             else
-              echo "⚠️ No previous commit found. Listing all files."
               git ls-files > changes.txt
             fi
           fi
-
           echo "Changed files detected:"
-          cat changes.txt || echo "No changes detected"
+          cat changes.txt
 
       - name: Detect impacted components
         id: detect
@@ -51,10 +50,10 @@ jobs:
           for FILE in $CHANGED; do
             IMPACTED=()
 
-            # Walk up directories until we find build-config.json
+            # Walk up directories until we find ci-config.yml
             DIR=$(dirname "$FILE")
             while [ "$DIR" != "/" ] && [ "$DIR" != "." ]; do
-              if [ -f "$DIR/build-config.json" ]; then
+              if [ -f "$DIR/ci-config.yml" ]; then
                 IMPACTED+=("$DIR")
               fi
               DIR=$(dirname "$DIR")
@@ -71,29 +70,22 @@ jobs:
               done
             done
 
-            # Write impacted components to temp file
             printf "%s\n" "${NEW_IMPACTED[@]}" | grep -v '^$' | sort -u >> $COMPONENTS_FILE
-
             echo "$FILE → [$(printf "%s " "${NEW_IMPACTED[@]}" | xargs)]" >> impact.log
           done
 
-          # Only keep components that exist in dependencies.json
           VALID_KEYS=$(echo $DEPS | jq -r 'keys[]')
           FILTERED=$(sort -u $COMPONENTS_FILE | grep -v '^$' | grep -Fxf <(echo "$VALID_KEYS"))
-
-          # Create compact JSON array
           UNIQUE=$(echo "$FILTERED" | jq -R . | jq -s -c .)
 
           if [ -z "$UNIQUE" ] || [ "$UNIQUE" = "[]" ]; then
-            echo "⚠️ No impacted components detected."
             UNIQUE='["noop"]'
           fi
 
           echo "### Final impacted components: $UNIQUE ###"
+          echo "components=$UNIQUE" >> $GITHUB_OUTPUT
           echo "### Changed file → Impacted components table ###"
           cat impact.log || true
-
-          echo "components=$UNIQUE" >> $GITHUB_OUTPUT
 
       - name: Upload impact report
         uses: actions/upload-artifact@v4
@@ -111,32 +103,70 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Install yq
+        if: matrix.component != 'noop'
+        run: sudo apt-get update && sudo apt-get install -y yq jq
+
       - name: Skip if noop
         if: matrix.component == 'noop'
         run: echo "✅ No impacted components, skipping build."
 
-      - name: Build & Test component
+      - name: Build & Run Tests
         if: matrix.component != 'noop'
         run: |
-          echo "🏗️ Building component: ${{ matrix.component }}"
-          CONFIG="${{ matrix.component }}/build-config.json"
+          echo "🏗️ Component: ${{ matrix.component }}"
+          CONFIG="${{ matrix.component }}/ci-config.yml"
           if [ -f "$CONFIG" ]; then
-            BUILD_CMD=$(jq -r '.build' $CONFIG)
-            TEST_CMD=$(jq -r '.test' $CONFIG)
+            BUILD_CMD=$(yq -r '.build' $CONFIG)
+            echo "🔨 Build: $BUILD_CMD"
+            eval "$BUILD_CMD"
 
-            if [ "$BUILD_CMD" != "null" ] && [ -n "$BUILD_CMD" ]; then
-              echo "🔨 Running build: $BUILD_CMD"
-              eval "$BUILD_CMD"
+            TESTS=$(yq -r '.tests | keys[]' $CONFIG || true)
+            for TEST in $TESTS; do
+              CMD=$(yq -r ".tests[\"$TEST\"]" $CONFIG)
+              echo "🧪 Running $TEST tests: $CMD"
+              eval "$CMD"
+            done
+          else
+            echo "⚠️ No ci-config.yml found for ${{ matrix.component }}"
+          fi
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: ${{ fromJson(needs.detect-components.outputs.components) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install yq
+        if: matrix.component != 'noop'
+        run: sudo apt-get update && sudo apt-get install -y yq jq
+
+      - name: Skip if noop
+        if: matrix.component == 'noop'
+        run: echo "✅ No impacted components, skipping deploy."
+
+      - name: Deploy component
+        if: matrix.component != 'noop'
+        run: |
+          echo "🚀 Deploying component: ${{ matrix.component }}"
+          CONFIG="${{ matrix.component }}/ci-config.yml"
+          if [ -f "$CONFIG" ]; then
+            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+              ENV="production"
             else
-              echo "⚠️ No build command found in $CONFIG"
+              ENV="staging"
             fi
-
-            if [ "$TEST_CMD" != "null" ] && [ -n "$TEST_CMD" ]; then
-              echo "🧪 Running tests: $TEST_CMD"
-              eval "$TEST_CMD"
+            CMD=$(yq -r ".deploy[\"$ENV\"]" $CONFIG)
+            if [ "$CMD" != "null" ] && [ -n "$CMD" ]; then
+              echo "Running deploy for $ENV: $CMD"
+              eval "$CMD"
             else
-              echo "⚠️ No test command found in $CONFIG"
+              echo "⚠️ No deploy command found for $ENV in $CONFIG"
             fi
           else
-            echo "⚠️ No build-config.json found for ${{ matrix.component }}"
+            echo "⚠️ No ci-config.yml found for ${{ matrix.component }}"
           fi
