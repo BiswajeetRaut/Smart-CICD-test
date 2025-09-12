@@ -1,5 +1,5 @@
 {
-    "component-a": ["libs/logger", "libs/utils"],
+    "comoponent-a": ["libs/logger", "libs/utils"],
     "service-b": ["libs/utils"],
     "java-service": [],
     "libs/logger": [],
