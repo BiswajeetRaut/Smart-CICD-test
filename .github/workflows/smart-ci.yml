@@ -24,12 +24,19 @@ jobs:
             git fetch origin ${{ github.base_ref }} --depth=1
             git diff --name-only origin/${{ github.base_ref }}...HEAD > changes.txt
           else
-            echo "Comparing last commit with previous commit (push event)"
-            git diff --name-only HEAD~1 HEAD > changes.txt
+            echo "Push event detected"
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              echo "Comparing last commit with previous commit"
+              git diff --name-only HEAD~1 HEAD > changes.txt
+            else
+              echo "⚠️ No previous commit found (first commit or shallow clone). Listing all files."
+              git ls-files > changes.txt
+            fi
           fi
 
           echo "Changed files detected:"
           cat changes.txt || echo "No changes detected"
+
 
       - name: Detect impacted components
         id: detect
