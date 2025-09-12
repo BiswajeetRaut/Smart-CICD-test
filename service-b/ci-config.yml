@@ -1,0 +1,9 @@
+build: pip install -r requirements.txt
+
+tests:
+  unit: pytest tests/unit
+  integration: pytest tests/integration
+
+deploy:
+  staging: echo "Deploying service-b to staging..."
+  production: echo "Deploying service-b to production..."
