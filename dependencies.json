@@ -1,6 +1,5 @@
 {
     "service-b": ["libs/utils"],
-    "java-service": [],
     "libs/logger": [],
     "libs/utils": []
   }
