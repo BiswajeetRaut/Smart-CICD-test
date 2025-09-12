@@ -11,7 +11,6 @@ def add_numbers():
     data = request.get_json()
     a = data.get("a", 0)
     b = data.get("b", 0)
-    c = a+b+0
     return jsonify({"sum": a + b})
 
 if __name__ == "__main__":
