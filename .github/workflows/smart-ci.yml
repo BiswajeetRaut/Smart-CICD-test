@@ -116,7 +116,8 @@ jobs:
         if: matrix.component != 'noop'
         run: |
           echo "🏗️ Component: ${{ matrix.component }}"
-          CONFIG="${{ matrix.component }}/ci-config.yml"
+          cd "${{ matrix.component }}"   # 👈 move into the component folder
+          CONFIG="ci-config.yml"
           if [ -f "$CONFIG" ]; then
             BUILD_CMD=$(yq -r '.build' $CONFIG)
             echo "🔨 Build: $BUILD_CMD"
@@ -129,8 +130,9 @@ jobs:
               eval "$CMD"
             done
           else
-            echo "⚠️ No ci-config.yml found for ${{ matrix.component }}"
+            echo "⚠️ No ci-config.yml found in ${{ matrix.component }}"
           fi
+
 
   deploy:
     needs: build
