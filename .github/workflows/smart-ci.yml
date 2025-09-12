@@ -138,7 +138,7 @@ jobs:
 
   build:
     needs: detect-components
-    if: needs.detect-components.outputs.has-changes == 'true'
+    if: needs.detect-components.outputs.components-json !=["noop"]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
