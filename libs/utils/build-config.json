@@ -1,0 +1,6 @@
+{
+    "language": "python",
+    "build": "echo 'No build step required'",
+    "test": "pytest || echo 'No tests'"
+}
+  
