@@ -16,8 +16,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install yq
-        uses: mikefarah/yq@v4.44.1
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y yq jq
 
       - name: Get changed files
         id: changes
@@ -59,27 +59,26 @@ jobs:
               DIR=$(dirname "$DIR")
             done
 
-            # Dependency expansion with trace logging
-            EXPANDED=()
+            # Dependency expansion
+            NEW_IMPACTED=()
             for COMP in "${IMPACTED[@]}"; do
-              EXPANDED+=("$COMP")
-              for OTHER in $(echo "$DEPS" | yq -r 'keys[]'); do
-                if echo "$DEPS" | yq -e ".\"$OTHER\"[] | select(. == \"$COMP\")" > /dev/null; then
-                  echo "Dependency chain: $OTHER depends on $COMP" >> impact.log
-                  EXPANDED+=("$OTHER")
+              NEW_IMPACTED+=("$COMP")
+              for OTHER in $(echo $DEPS | jq -r 'keys[]'); do
+                if echo $DEPS | jq -e ".\"$OTHER\" | index(\"$COMP\")" > /dev/null; then
+                  NEW_IMPACTED+=("$OTHER")
                 fi
               done
             done
 
-            printf "%s\n" "${EXPANDED[@]}" | grep -v '^$' | sort -u >> $COMPONENTS_FILE
-            echo "$FILE → [$(printf "%s " "${EXPANDED[@]}" | xargs)]" >> impact.log
+            printf "%s\n" "${NEW_IMPACTED[@]}" | grep -v '^$' | sort -u >> $COMPONENTS_FILE
+            echo "$FILE → [$(printf "%s " "${NEW_IMPACTED[@]}" | xargs)]" >> impact.log
           done
 
-          VALID_KEYS=$(echo "$DEPS" | yq -r 'keys[]')
+          VALID_KEYS=$(echo $DEPS | jq -r 'keys[]')
           FILTERED=$(sort -u $COMPONENTS_FILE | grep -v '^$' | grep -Fxf <(echo "$VALID_KEYS"))
-          UNIQUE=$(echo "$FILTERED" | yq -R . | yq -s -c .)
+          UNIQUE=$(echo "$FILTERED" | jq -R . | jq -s -c .)
 
-          if [ -z "$UNIQUE" ] || [ "$UNIQUE" = "[]" ] || [ "$UNIQUE" = "null" ]; then
+          if [ -z "$UNIQUE" ] || [ "$UNIQUE" = "[]" ]; then
             UNIQUE='["noop"]'
           fi
 
@@ -100,14 +99,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: ${{ fromJson(needs.detect-components.outputs.components || '["noop"]') }}
+        component: ${{ fromJson(needs.detect-components.outputs.components) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Install yq
         if: matrix.component != 'noop'
-        uses: mikefarah/yq@v4.44.1
+        run: sudo apt-get update && sudo apt-get install -y yq jq
 
       - name: Skip if noop
         if: matrix.component == 'noop'
@@ -116,12 +115,12 @@ jobs:
       - name: Build & Run Tests
         if: matrix.component != 'noop'
         run: |
-          echo "🏗️ Building component: ${{ matrix.component }}"
-          cd "${{ matrix.component }}"
+          echo "🏗️ Component: ${{ matrix.component }}"
+          cd "${{ matrix.component }}"   # 👈 move into the component folder
           CONFIG="ci-config.yml"
           if [ -f "$CONFIG" ]; then
             BUILD_CMD=$(yq -r '.build' $CONFIG)
-            echo "🔨 Build command: $BUILD_CMD"
+            echo "🔨 Build: $BUILD_CMD"
             eval "$BUILD_CMD"
 
             TESTS=$(yq -r '.tests | keys[]' $CONFIG || true)
@@ -134,44 +133,43 @@ jobs:
             echo "⚠️ No ci-config.yml found in ${{ matrix.component }}"
           fi
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        component: ${{ fromJson(needs.detect-components.outputs.components || '["noop"]') }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
 
-      - name: Install yq
-        if: matrix.component != 'noop'
-        uses: mikefarah/yq@v4.44.1
+  # deploy:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     matrix:
+  #       component: ${{ fromJson(needs.detect-components.outputs.components) }}
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v3
 
-      - name: Skip if noop
-        if: matrix.component == 'noop'
-        run: echo "✅ No impacted components, skipping deploy."
+  #     - name: Install yq
+  #       if: matrix.component != 'noop'
+  #       run: sudo apt-get update && sudo apt-get install -y yq jq
 
-      - name: Deploy component
-        if: matrix.component != 'noop'
-        run: |
-          echo "🚀 Deploying component: ${{ matrix.component }}"
-          cd "${{ matrix.component }}"
-          CONFIG="ci-config.yml"
-          if [ -f "$CONFIG" ]; then
-            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-              ENV="production"
-            else
-              ENV="staging"
-            fi
-            CMD=$(yq -r ".deploy[\"$ENV\"]" $CONFIG)
-            if [ "$CMD" != "null" ] && [ -n "$CMD" ]; then
-              echo "Running deploy for $ENV: $CMD"
-              eval "$CMD"
-            else
-              echo "⚠️ No deploy command found for $ENV in $CONFIG"
-            fi
-          else
-            echo "⚠️ No ci-config.yml found in ${{ matrix.component }}"
-          fi
+  #     - name: Skip if noop
+  #       if: matrix.component == 'noop'
+  #       run: echo "✅ No impacted components, skipping deploy."
+
+  #     - name: Deploy component
+  #       if: matrix.component != 'noop'
+  #       run: |
+  #         echo "🚀 Deploying component: ${{ matrix.component }}"
+  #         CONFIG="${{ matrix.component }}/ci-config.yml"
+  #         if [ -f "$CONFIG" ]; then
+  #           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+  #             ENV="production"
+  #           else
+  #             ENV="staging"
+  #           fi
+  #           CMD=$(yq -r ".deploy[\"$ENV\"]" $CONFIG)
+  #           if [ "$CMD" != "null" ] && [ -n "$CMD" ]; then
+  #             echo "Running deploy for $ENV: $CMD"
+  #             eval "$CMD"
+  #           else
+  #             echo "⚠️ No deploy command found for $ENV in $CONFIG"
+  #           fi
+  #         else
+  #           echo "⚠️ No ci-config.yml found for ${{ matrix.component }}"
+  #         fi
