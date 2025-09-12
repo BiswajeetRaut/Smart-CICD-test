@@ -1,8 +1,4 @@
 import pytest
-import sys, os
-
-# Add parent dir (service-b) to sys.path so app.py is importable
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from app import app
 
