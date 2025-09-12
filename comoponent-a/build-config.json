@@ -1,5 +1,0 @@
-{
-    "language": "node",
-    "build": "npm install && npm run build",
-    "test": "npm test"
-  }
