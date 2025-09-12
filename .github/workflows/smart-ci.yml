@@ -23,6 +23,13 @@ jobs:
           echo "Changed files:"
           cat changes.txt
 
+      - name: Debug changed files
+        run: |
+          echo "Changed files detected by git:"
+          cat changes.txt
+          echo "Files with build-config.json present:"
+          find . -name "build-config.json"
+
       - name: Detect impacted components
         id: detect
         run: |
