@@ -19,33 +19,29 @@ jobs:
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y yq jq
 
-      # - name: Get changed files
-      #   id: changes
-      #   run: |
-      #     echo "Detecting changed files..."
-      #     if [ "${{ github.event_name }}" = "pull_request" ]; then
-      #       git fetch origin ${{ github.base_ref }} --depth=1
-      #       git diff --name-only origin/${{ github.base_ref }}...HEAD > changes.txt
-      #     else
-      #       if git rev-parse HEAD~1 >/dev/null 2>&1; then
-      #         git diff --name-only HEAD~1 HEAD > changes.txt
-      #       else
-      #         git ls-files > changes.txt
-      #       fi
-      #     fi
-      #     echo "Changed files detected:"
-      #     cat changes.txt
-
       - name: Get changed files
         id: changes
         run: |
           echo "Detecting changed files..."
           echo "" > changes.txt
-          jq -r '.commits[].added[], .commits[].modified[], .commits[].removed[]' <<< '${{ toJson(github.event) }}' \
-            | sort -u >> changes.txt
-          echo "Changed files detected:"
-          cat changes.txt
 
+          # Try from event payload first
+          FILES=$(jq -r '[.commits[].added[], .commits[].modified[], .commits[].removed[]] | unique | .[]?' <<< '${{ toJson(github.event) }}')
+
+          if [ -n "$FILES" ]; then
+            echo "$FILES" > changes.txt
+            echo "Changed files detected from event payload:"
+            cat changes.txt
+          else
+            echo "⚠️ No files from event payload, falling back to git diff"
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              git diff --name-only HEAD~1 HEAD > changes.txt
+            else
+              git ls-files > changes.txt
+            fi
+            echo "Changed files detected:"
+            cat changes.txt
+          fi
 
       - name: Detect impacted components
         id: detect
@@ -70,7 +66,7 @@ jobs:
               DIR=$(dirname "$DIR")
             done
 
-            # Dependency expansion (using jq because DEPS is JSON)
+            # Dependency expansion (jq, since DEPS is JSON)
             NEW_IMPACTED=()
             for COMP in "${IMPACTED[@]}"; do
               echo "Checking impacted component: $COMP" >> impact.log
@@ -103,7 +99,6 @@ jobs:
           echo "### Changed file → Impacted components table ###"
           cat impact.log || true
 
-
       - name: Upload impact report
         uses: actions/upload-artifact@v4
         with:
@@ -121,7 +116,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install yq
+      - name: Install tools
         if: matrix.component != 'noop'
         run: sudo apt-get update && sudo apt-get install -y yq jq
 
@@ -132,8 +127,10 @@ jobs:
       - name: Build & Run Tests
         if: matrix.component != 'noop'
         run: |
-          echo "🏗️ Component: ${{ matrix.component }}"
-          cd "${{ matrix.component }}"   # 👈 move into the component folder
+          echo "============================"
+          echo "🏗️ Building component: ${{ matrix.component }}"
+          echo "============================"
+          cd "${{ matrix.component }}"
           CONFIG="ci-config.yml"
           if [ -f "$CONFIG" ]; then
             BUILD_CMD=$(yq -r '.build' $CONFIG)
@@ -149,44 +146,3 @@ jobs:
           else
             echo "⚠️ No ci-config.yml found in ${{ matrix.component }}"
           fi
-
-
-  # deploy:
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   strategy:
-  #     matrix:
-  #       component: ${{ fromJson(needs.detect-components.outputs.components) }}
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v3
-
-  #     - name: Install yq
-  #       if: matrix.component != 'noop'
-  #       run: sudo apt-get update && sudo apt-get install -y yq jq
-
-  #     - name: Skip if noop
-  #       if: matrix.component == 'noop'
-  #       run: echo "✅ No impacted components, skipping deploy."
-
-  #     - name: Deploy component
-  #       if: matrix.component != 'noop'
-  #       run: |
-  #         echo "🚀 Deploying component: ${{ matrix.component }}"
-  #         CONFIG="${{ matrix.component }}/ci-config.yml"
-  #         if [ -f "$CONFIG" ]; then
-  #           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-  #             ENV="production"
-  #           else
-  #             ENV="staging"
-  #           fi
-  #           CMD=$(yq -r ".deploy[\"$ENV\"]" $CONFIG)
-  #           if [ "$CMD" != "null" ] && [ -n "$CMD" ]; then
-  #             echo "Running deploy for $ENV: $CMD"
-  #             eval "$CMD"
-  #           else
-  #             echo "⚠️ No deploy command found for $ENV in $CONFIG"
-  #           fi
-  #         else
-  #           echo "⚠️ No ci-config.yml found for ${{ matrix.component }}"
-  #         fi
