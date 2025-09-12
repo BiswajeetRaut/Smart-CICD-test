@@ -1,4 +1,4 @@
-name: Smart CI/CD (MVP1)
+name: Smart CI/CD (Enhanced)
 
 on:
   push:
@@ -6,15 +6,20 @@ on:
       - main
       - '**'
   pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
   detect-components:
     runs-on: ubuntu-latest
     outputs:
       components: ${{ steps.detect.outputs.components }}
+      components-json: ${{ steps.detect.outputs.components-json }}
+      has-changes: ${{ steps.detect.outputs.has-changes }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for better diff detection
 
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y yq jq
@@ -23,99 +28,200 @@ jobs:
         id: changes
         run: |
           echo "Detecting changed files..."
-          echo "" > changes.txt
-
-          # Try to pull changed files from event payload (if available)
-          FILES=$(jq -r '[.commits[]? | .added[], .modified[], .removed[]] | unique | .[]?' <<< '${{ toJson(github.event) }}')
-
-          if [ -n "$FILES" ]; then
-            echo "$FILES" > changes.txt
-            echo "Changed files detected from event payload:"
-            cat changes.txt
-          else
-            echo "⚠️ No files from event payload, falling back to git diff"
-            if git rev-parse HEAD~1 >/dev/null 2>&1; then
-              git diff --name-only HEAD~1 HEAD > changes.txt
+          
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # For PRs, compare against the target branch
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            echo "PR detected: comparing $HEAD_SHA against $BASE_SHA"
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changes.txt
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+              # New branch - compare against main
+              echo "New branch detected, comparing against main"
+              git diff --name-only origin/main...HEAD > changes.txt 2>/dev/null || git ls-files > changes.txt
             else
-              git ls-files > changes.txt
+              # Regular push - compare with previous commit
+              echo "Regular push: comparing ${{ github.event.before }}..${{ github.event.after }}"
+              git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" > changes.txt
             fi
-            echo "Changed files detected:"
-            cat changes.txt
+          else
+            echo "Fallback: using git diff HEAD~1"
+            git diff --name-only HEAD~1 HEAD > changes.txt 2>/dev/null || git ls-files > changes.txt
           fi
-
+          
+          echo "Changed files:"
+          cat changes.txt
+          
+          # Check if we have any changes
+          if [ -s changes.txt ]; then
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+            echo "No changes detected"
+          fi
 
       - name: Detect impacted components
         id: detect
         run: |
           echo "### Detecting impacted components ###"
-          CHANGED=$(cat changes.txt)
-          COMPONENTS_FILE=components.tmp
-          > $COMPONENTS_FILE
+          
+          # Check if dependencies.json exists
+          if [ ! -f "dependencies.json" ]; then
+            echo "⚠️ dependencies.json not found, creating empty one"
+            echo "{}" > dependencies.json
+          fi
+          
+          CHANGED_FILES=$(cat changes.txt)
+          COMPONENTS_SET=$(mktemp)
           DEPS=$(cat dependencies.json)
-
-          echo "" > impact.log
-
-          for FILE in $CHANGED; do
-            IMPACTED=()
-
-            # Walk up directories until we find ci-config.yml
+          
+          echo "Changed files analysis:" > impact.log
+          
+          # If no changes, set empty result
+          if [ ! -s changes.txt ]; then
+            echo "components=[]" >> $GITHUB_OUTPUT
+            echo "components-json=[]" >> $GITHUB_OUTPUT
+            echo "No changes detected, skipping component detection" >> impact.log
+            exit 0
+          fi
+          
+          # Find directly impacted components
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            echo "Analyzing: $FILE" >> impact.log
+            
+            # Walk up directory tree to find ci-config.yml
             DIR=$(dirname "$FILE")
+            FOUND_COMPONENT=false
+            
             while [ "$DIR" != "/" ] && [ "$DIR" != "." ]; do
               if [ -f "$DIR/ci-config.yml" ]; then
-                IMPACTED+=("$DIR")
+                echo "  Found component: $DIR" >> impact.log
+                echo "$DIR" >> "$COMPONENTS_SET"
+                FOUND_COMPONENT=true
+                break
               fi
               DIR=$(dirname "$DIR")
             done
-
-            # Dependency expansion (jq, since DEPS is JSON)
-            NEW_IMPACTED=()
-            for COMP in "${IMPACTED[@]}"; do
-              echo "Checking impacted component: $COMP" >> impact.log
-              NEW_IMPACTED+=("$COMP")
-              for OTHER in $(echo "$DEPS" | jq -r 'keys[]'); do
-                echo "  Does $OTHER depend on $COMP ?" >> impact.log
-                if echo "$DEPS" | jq -e ".\"$OTHER\" | index(\"$COMP\")" > /dev/null; then
-                  echo "    ✅ Yes, adding $OTHER" >> impact.log
-                  NEW_IMPACTED+=("$OTHER")
-                else
-                  echo "    ❌ No" >> impact.log
+            
+            if [ "$FOUND_COMPONENT" = false ]; then
+              echo "  No component found for $FILE" >> impact.log
+            fi
+          done < changes.txt
+          
+          # Expand dependencies
+          echo "" >> impact.log
+          echo "Dependency expansion:" >> impact.log
+          
+          INITIAL_COMPONENTS=$(sort -u "$COMPONENTS_SET")
+          
+          # Multiple passes to handle transitive dependencies
+          for PASS in 1 2 3; do
+            echo "Pass $PASS:" >> impact.log
+            ADDED_THIS_PASS=false
+            
+            while IFS= read -r COMP; do
+              [ -z "$COMP" ] && continue
+              
+              # Find components that depend on this one
+              DEPENDENTS=$(echo "$DEPS" | jq -r --arg comp "$COMP" 'to_entries[] | select(.value | type == "array" and (. | index($comp))) | .key')
+              
+              for DEPENDENT in $DEPENDENTS; do
+                if ! grep -Fxq "$DEPENDENT" "$COMPONENTS_SET"; then
+                  echo "  $COMP → $DEPENDENT" >> impact.log
+                  echo "$DEPENDENT" >> "$COMPONENTS_SET"
+                  ADDED_THIS_PASS=true
                 fi
               done
-            done
-
-            printf "%s\n" "${NEW_IMPACTED[@]}" | grep -v '^$' | sort -u >> $COMPONENTS_FILE
-            echo "$FILE → [$(printf "%s " "${NEW_IMPACTED[@]}" | xargs)]" >> impact.log
+            done < <(sort -u "$COMPONENTS_SET")
+            
+            [ "$ADDED_THIS_PASS" = false ] && break
           done
-
-          VALID_KEYS=$(echo "$DEPS" | jq -r 'keys[]')
-          FILTERED=$(sort -u $COMPONENTS_FILE | grep -v '^$' | grep -Fxf <(echo "$VALID_KEYS"))
-          UNIQUE=$(echo "$FILTERED" | jq -R . | jq -s -c .)
-
-          if [ -z "$UNIQUE" ] || [ "$UNIQUE" = "[]" ]; then
-            UNIQUE='["noop"]'
+          
+          # Filter and validate components
+          VALID_COMPONENTS=$(mktemp)
+          while IFS= read -r COMP; do
+            [ -z "$COMP" ] && continue
+            if [ -f "$COMP/ci-config.yml" ]; then
+              echo "$COMP" >> "$VALID_COMPONENTS"
+            else
+              echo "⚠️ Invalid component (no ci-config.yml): $COMP" >> impact.log
+            fi
+          done < <(sort -u "$COMPONENTS_SET")
+          
+          # Create final output
+          if [ -s "$VALID_COMPONENTS" ]; then
+            COMPONENTS_ARRAY=$(sort -u "$VALID_COMPONENTS" | jq -R . | jq -s -c .)
+            COMPONENTS_LIST=$(sort -u "$VALID_COMPONENTS" | tr '\n' ' ')
+          else
+            COMPONENTS_ARRAY='["noop"]'
+            COMPONENTS_LIST="noop"
+            echo "No valid components found, using noop" >> impact.log
           fi
-
-          echo "### Final impacted components: $UNIQUE ###"
-          echo "components=$UNIQUE" >> $GITHUB_OUTPUT
-          echo "### Changed file → Impacted components table ###"
-          cat impact.log || true
+          
+          echo "components=$COMPONENTS_LIST" >> $GITHUB_OUTPUT
+          echo "components-json=$COMPONENTS_ARRAY" >> $GITHUB_OUTPUT
+          
+          echo "" >> impact.log
+          echo "Final impacted components: $COMPONENTS_ARRAY" >> impact.log
+          
+          # Cleanup
+          rm -f "$COMPONENTS_SET" "$VALID_COMPONENTS"
 
       - name: Upload impact report
         uses: actions/upload-artifact@v4
         with:
-          name: impact-report
+          name: impact-report-${{ github.run_id }}
           path: impact.log
+
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const components = ${{ steps.detect.outputs.components-json }};
+            const hasChanges = '${{ steps.detect.outputs.has-changes }}' === 'true';
+            
+            let comment = '## 🔍 Impact Analysis\n\n';
+            
+            if (!hasChanges) {
+              comment += '✨ No changes detected in this PR.\n';
+            } else if (components.includes('noop')) {
+              comment += '✨ No buildable components impacted by this PR.\n';
+            } else {
+              comment += `🏗️ **Components to build:** ${components.length}\n\n`;
+              components.forEach(comp => {
+                comment += `- \`${comp}\`\n`;
+              });
+            }
+            
+            try {
+              const report = fs.readFileSync('impact.log', 'utf8');
+              comment += '\n<details><summary>📋 Detailed Analysis</summary>\n\n```\n' + report + '\n```\n</details>';
+            } catch (e) {
+              console.log('Could not read impact report:', e.message);
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
 
   build:
     needs: detect-components
+    if: needs.detect-components.outputs.has-changes == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        component: ${{ fromJson(needs.detect-components.outputs.components) }}
+        component: ${{ fromJson(needs.detect-components.outputs.components-json) }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install tools
         if: matrix.component != 'noop'
@@ -123,27 +229,68 @@ jobs:
 
       - name: Skip if noop
         if: matrix.component == 'noop'
-        run: echo "✅ No impacted components, skipping build."
+        run: |
+          echo "✅ No impacted components detected"
+          echo "This job runs to satisfy GitHub's required status checks"
 
-      - name: Build & Run Tests
+      - name: Validate component
+        if: matrix.component != 'noop'
+        run: |
+          if [ ! -d "${{ matrix.component }}" ]; then
+            echo "❌ Component directory not found: ${{ matrix.component }}"
+            exit 1
+          fi
+          
+          if [ ! -f "${{ matrix.component }}/ci-config.yml" ]; then
+            echo "❌ ci-config.yml not found in: ${{ matrix.component }}"
+            exit 1
+          fi
+          
+          echo "✅ Component validation passed"
+
+      - name: Build & Test Component
         if: matrix.component != 'noop'
         run: |
           echo "============================"
-          echo "🏗️ Building component: ${{ matrix.component }}"
+          echo "🏗️ Building: ${{ matrix.component }}"
           echo "============================"
+          
           cd "${{ matrix.component }}"
           CONFIG="ci-config.yml"
-          if [ -f "$CONFIG" ]; then
-            BUILD_CMD=$(yq -r '.build' $CONFIG)
-            echo "🔨 Build: $BUILD_CMD"
+          
+          # Build step
+          BUILD_CMD=$(yq -r '.build // "echo No build command specified"' $CONFIG)
+          echo "🔨 Build command: $BUILD_CMD"
+          
+          if [ "$BUILD_CMD" != "null" ] && [ "$BUILD_CMD" != "" ]; then
             eval "$BUILD_CMD"
-
-            TESTS=$(yq -r '.tests | keys[]' $CONFIG || true)
-            for TEST in $TESTS; do
-              CMD=$(yq -r ".tests[\"$TEST\"]" $CONFIG)
-              echo "🧪 Running $TEST tests: $CMD"
-              eval "$CMD"
-            done
           else
-            echo "⚠️ No ci-config.yml found in ${{ matrix.component }}"
+            echo "⚠️ No build command specified in ci-config.yml"
           fi
+          
+          # Test steps
+          echo "🧪 Running tests..."
+          TESTS=$(yq -r '.tests // {} | keys[]' $CONFIG 2>/dev/null || echo "")
+          
+          if [ -z "$TESTS" ]; then
+            echo "ℹ️ No tests configured"
+          else
+            for TEST_NAME in $TESTS; do
+              TEST_CMD=$(yq -r ".tests[\"$TEST_NAME\"]" $CONFIG)
+              echo "  🎯 Running $TEST_NAME: $TEST_CMD"
+              eval "$TEST_CMD"
+            done
+          fi
+          
+          echo "✅ Component ${{ matrix.component }} completed successfully"
+
+      - name: Upload build artifacts
+        if: matrix.component != 'noop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.component }}-${{ github.run_id }}
+          path: |
+            ${{ matrix.component }}/dist/
+            ${{ matrix.component }}/build/
+            ${{ matrix.component }}/target/
+          if-no-files-found: ignore
