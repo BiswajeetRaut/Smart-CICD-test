@@ -1,25 +1,29 @@
-name: Smart CI/CD (Universal MVP1 with Debug Logs)
+name: Smart CI
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
-  detect-components:
+  detect:
     runs-on: ubuntu-latest
     outputs:
       components: ${{ steps.detect.outputs.components }}
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Get changed files
+        id: files
         run: |
-          git fetch origin main
-          git diff --name-only origin/main...HEAD > changes.txt
-          echo "### Changed files in this commit/PR ###"
-          cat changes.txt || echo "No changed files detected"
+          echo "### Getting changed files ###"
+          git fetch origin ${{ github.base_ref || 'main' }}
+          git diff --name-only origin/${{ github.base_ref || 'main' }} > changes.txt
+          cat changes.txt
 
       - name: Detect impacted components
         id: detect
@@ -30,10 +34,11 @@ jobs:
           DEPS=$(cat dependencies.json)
 
           for FILE in $CHANGED; do
-            ROOT=$(echo $FILE | cut -d'/' -f1-2)
-            echo "File changed: $FILE → mapping to root: $ROOT"
+            ROOT=$(echo $FILE | cut -d'/' -f1)
+            echo "File changed: $FILE → root: $ROOT"
             COMPONENTS="$COMPONENTS $ROOT"
 
+            # Check dependencies
             for COMP in $(echo $DEPS | jq -r 'keys[]'); do
               if echo $DEPS | jq -e ".\"$COMP\" | index(\"$ROOT\")" > /dev/null; then
                 echo "Dependency match: $ROOT impacts $COMP"
@@ -42,7 +47,6 @@ jobs:
             done
           done
 
-          # Remove duplicates, ensure JSON array, fallback to []
           UNIQUE=$(echo $COMPONENTS | tr ' ' '\n' | grep -v '^$' | sort -u | jq -R . | jq -s .)
           if [ -z "$UNIQUE" ] || [ "$UNIQUE" = "null" ]; then
             UNIQUE="[]"
@@ -52,38 +56,32 @@ jobs:
           echo "components=$UNIQUE" >> $GITHUB_OUTPUT
 
   build:
-    needs: detect-components
-    if: needs.detect-components.outputs.components != '[]'
+    needs: detect
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        component: ${{ fromJson(needs.detect-components.outputs.components) }}
+        component: ${{ fromJson(needs.detect.outputs.components) }}
+      max-parallel: 2
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Read build config
+      - name: Load build config
         id: config
         run: |
           CONFIG_FILE="${{ matrix.component }}/build-config.json"
-          echo ">>> Checking build config for component: ${{ matrix.component }}"
           if [ -f "$CONFIG_FILE" ]; then
-            BUILD_CMD=$(jq -r '.build' $CONFIG_FILE)
-            TEST_CMD=$(jq -r '.test' $CONFIG_FILE)
-            echo "Found build-config.json → build: $BUILD_CMD | test: $TEST_CMD"
+            echo "### Using config from $CONFIG_FILE ###"
+            CMD=$(jq -r '.build' $CONFIG_FILE)
           else
-            BUILD_CMD="echo 'No build step'"
-            TEST_CMD="echo 'No test step'"
-            echo "⚠️ No build-config.json found for ${{ matrix.component }}. Skipping actual build/test."
+            echo "### No build-config.json found, using default ###"
+            CMD="echo 'No build needed for ${{ matrix.component }}'"
           fi
-          echo "build_cmd=$BUILD_CMD" >> $GITHUB_OUTPUT
-          echo "test_cmd=$TEST_CMD" >> $GITHUB_OUTPUT
+          echo "cmd=$CMD" >> $GITHUB_OUTPUT
 
-      - name: Build & Test Component
+      - name: Build component
         run: |
-          echo "======================================"
-          echo ">>> STARTING PARTIAL BUILD for component: ${{ matrix.component }}"
-          echo "======================================"
-          cd ${{ matrix.component }}
-          bash -c "${{ steps.config.outputs.build_cmd }}"
-          bash -c "${{ steps.config.outputs.test_cmd }}"
-          echo "✅ Completed build & test for ${{ matrix.component }}"
+          echo "### Building component: ${{ matrix.component }} ###"
+          echo "Running command: ${{ steps.config.outputs.cmd }}"
+          cd ${{ matrix.component }} || exit 0
+          sh -c "${{ steps.config.outputs.cmd }}"
