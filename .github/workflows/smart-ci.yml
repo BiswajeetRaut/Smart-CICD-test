@@ -63,8 +63,8 @@ jobs:
             EXPANDED=()
             for COMP in "${IMPACTED[@]}"; do
               EXPANDED+=("$COMP")
-              for OTHER in $(echo $DEPS | yq -r 'keys[]'); do
-                if echo $DEPS | yq -e ".\"$OTHER\" | index(\"$COMP\")" > /dev/null; then
+              for OTHER in $(echo "$DEPS" | yq -r 'keys[]'); do
+                if echo "$DEPS" | yq -e ".\"$OTHER\"[] | select(. == \"$COMP\")" > /dev/null; then
                   echo "Dependency chain: $OTHER depends on $COMP" >> impact.log
                   EXPANDED+=("$OTHER")
                 fi
@@ -75,7 +75,7 @@ jobs:
             echo "$FILE → [$(printf "%s " "${EXPANDED[@]}" | xargs)]" >> impact.log
           done
 
-          VALID_KEYS=$(echo $DEPS | yq -r 'keys[]')
+          VALID_KEYS=$(echo "$DEPS" | yq -r 'keys[]')
           FILTERED=$(sort -u $COMPONENTS_FILE | grep -v '^$' | grep -Fxf <(echo "$VALID_KEYS"))
           UNIQUE=$(echo "$FILTERED" | yq -R . | yq -s -c .)
 
@@ -116,12 +116,12 @@ jobs:
       - name: Build & Run Tests
         if: matrix.component != 'noop'
         run: |
-          echo "🏗️ Component: ${{ matrix.component }}"
+          echo "🏗️ Building component: ${{ matrix.component }}"
           cd "${{ matrix.component }}"
           CONFIG="ci-config.yml"
           if [ -f "$CONFIG" ]; then
             BUILD_CMD=$(yq -r '.build' $CONFIG)
-            echo "🔨 Build: $BUILD_CMD"
+            echo "🔨 Build command: $BUILD_CMD"
             eval "$BUILD_CMD"
 
             TESTS=$(yq -r '.tests | keys[]' $CONFIG || true)
