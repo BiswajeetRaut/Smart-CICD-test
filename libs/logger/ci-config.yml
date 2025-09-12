@@ -1,0 +1,8 @@
+build: echo "Building logger library"
+
+tests:
+  unit: npm test
+
+deploy:
+  staging: echo "Publishing logger to staging registry..."
+  production: echo "Publishing logger to production registry..."
