@@ -1,4 +1,4 @@
-name: Smart CI/CD (Universal MVP1)
+name: Smart CI/CD (Universal MVP1 with Debug Logs)
 
 on:
   push:
@@ -18,22 +18,25 @@ jobs:
         run: |
           git fetch origin main
           git diff --name-only origin/main...HEAD > changes.txt
-          echo "Changed files:"
-          cat changes.txt
+          echo "### Changed files in this commit/PR ###"
+          cat changes.txt || echo "No changed files detected"
 
       - name: Detect impacted components
         id: detect
         run: |
+          echo "### Detecting impacted components ###"
           CHANGED=$(cat changes.txt)
           COMPONENTS=""
           DEPS=$(cat dependencies.json)
 
           for FILE in $CHANGED; do
             ROOT=$(echo $FILE | cut -d'/' -f1-2)
+            echo "File changed: $FILE → mapping to root: $ROOT"
             COMPONENTS="$COMPONENTS $ROOT"
 
             for COMP in $(echo $DEPS | jq -r 'keys[]'); do
               if echo $DEPS | jq -e ".\"$COMP\" | index(\"$ROOT\")" > /dev/null; then
+                echo "Dependency match: $ROOT impacts $COMP"
                 COMPONENTS="$COMPONENTS $COMP"
               fi
             done
@@ -45,7 +48,7 @@ jobs:
             UNIQUE="[]"
           fi
 
-          echo "Detected impacted components: $UNIQUE"
+          echo "### Final impacted components: $UNIQUE ###"
           echo "components=$UNIQUE" >> $GITHUB_OUTPUT
 
   build:
@@ -62,21 +65,25 @@ jobs:
         id: config
         run: |
           CONFIG_FILE="${{ matrix.component }}/build-config.json"
+          echo ">>> Checking build config for component: ${{ matrix.component }}"
           if [ -f "$CONFIG_FILE" ]; then
             BUILD_CMD=$(jq -r '.build' $CONFIG_FILE)
             TEST_CMD=$(jq -r '.test' $CONFIG_FILE)
+            echo "Found build-config.json → build: $BUILD_CMD | test: $TEST_CMD"
           else
             BUILD_CMD="echo 'No build step'"
             TEST_CMD="echo 'No test step'"
+            echo "⚠️ No build-config.json found for ${{ matrix.component }}. Skipping actual build/test."
           fi
           echo "build_cmd=$BUILD_CMD" >> $GITHUB_OUTPUT
           echo "test_cmd=$TEST_CMD" >> $GITHUB_OUTPUT
 
       - name: Build & Test Component
         run: |
+          echo "======================================"
+          echo ">>> STARTING PARTIAL BUILD for component: ${{ matrix.component }}"
+          echo "======================================"
           cd ${{ matrix.component }}
-          echo "Running build for ${{ matrix.component }}"
           bash -c "${{ steps.config.outputs.build_cmd }}"
-
-          echo "Running tests for ${{ matrix.component }}"
           bash -c "${{ steps.config.outputs.test_cmd }}"
+          echo "✅ Completed build & test for ${{ matrix.component }}"
