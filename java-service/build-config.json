@@ -1,5 +1,0 @@
-{
-    "language": "java",
-    "build": "mvn clean install -DskipTests",
-    "test": "mvn test"
-  }
