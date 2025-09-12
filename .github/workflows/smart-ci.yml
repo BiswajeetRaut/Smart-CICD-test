@@ -18,17 +18,18 @@ jobs:
       - name: Get changed files
         id: changes
         run: |
-          git fetch origin ${{ github.base_ref || 'main' }} --depth=1
-          git diff --name-only HEAD origin/${{ github.base_ref || 'main' }} > changes.txt
-          echo "Changed files:"
-          cat changes.txt
+          echo "Detecting changed files..."
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "Comparing PR branch with base branch: ${{ github.base_ref }}"
+            git fetch origin ${{ github.base_ref }} --depth=1
+            git diff --name-only origin/${{ github.base_ref }}...HEAD > changes.txt
+          else
+            echo "Comparing last commit with previous commit (push event)"
+            git diff --name-only HEAD~1 HEAD > changes.txt
+          fi
 
-      - name: Debug changed files
-        run: |
-          echo "Changed files detected by git:"
-          cat changes.txt
-          echo "Files with build-config.json present:"
-          find . -name "build-config.json"
+          echo "Changed files detected:"
+          cat changes.txt || echo "No changes detected"
 
       - name: Detect impacted components
         id: detect
@@ -45,7 +46,7 @@ jobs:
 
             # Walk up directories until we find build-config.json
             DIR=$(dirname "$FILE")
-            while [ "$DIR" != "." ] && [ "$DIR" != "/" ]; do
+            while [ "$DIR" != "/" ] && [ "$DIR" != "." ]; do
               if [ -f "$DIR/build-config.json" ]; then
                 IMPACTED+=("$DIR")
               fi
@@ -63,7 +64,6 @@ jobs:
               done
             done
 
-            # Deduplicate
             UNIQUE_IMPACTED=$(printf "%s\n" "${NEW_IMPACTED[@]}" | sort -u | xargs)
             COMPONENTS="$COMPONENTS $UNIQUE_IMPACTED"
 
