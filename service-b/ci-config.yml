@@ -1,8 +1,8 @@
 build: pip install -r requirements.txt
 
 tests:
-  unit: pytest tests/unit
-  integration: pytest tests/integration || true
+  unit: PYTHONPATH=. pytest tests/unit
+  integration: PYTHONPATH=. pytest tests/integration || true
 
 deploy:
   staging: echo "Deploying service-b to staging..."
