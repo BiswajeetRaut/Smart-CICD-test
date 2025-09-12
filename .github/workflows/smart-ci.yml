@@ -77,7 +77,7 @@ jobs:
           echo "components=$UNIQUE" >> $GITHUB_OUTPUT
 
       - name: Upload impact report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: impact-report
           path: impact.log
