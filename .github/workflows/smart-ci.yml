@@ -1,0 +1,74 @@
+name: Smart CI/CD (Universal MVP1)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  detect-components:
+    runs-on: ubuntu-latest
+    outputs:
+      components: ${{ steps.detect.outputs.components }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Get changed files
+        run: |
+          git fetch origin main
+          git diff --name-only origin/main...HEAD > changes.txt
+          cat changes.txt
+
+      - name: Detect impacted components
+        id: detect
+        run: |
+          CHANGED=$(cat changes.txt)
+          COMPONENTS=""
+          DEPS=$(cat dependencies.json)
+
+          for FILE in $CHANGED; do
+            ROOT=$(echo $FILE | cut -d'/' -f1-2)
+            COMPONENTS="$COMPONENTS $ROOT"
+
+            for COMP in $(echo $DEPS | jq -r 'keys[]'); do
+              if echo $DEPS | jq -e ".\"$COMP\" | index(\"$ROOT\")" > /dev/null; then
+                COMPONENTS="$COMPONENTS $COMP"
+              fi
+            done
+          done
+
+          UNIQUE=$(echo $COMPONENTS | tr ' ' '\n' | sort -u | jq -R . | jq -s .)
+          echo "components=$UNIQUE" >> $GITHUB_OUTPUT
+
+  build:
+    needs: detect-components
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: ${{ fromJson(needs.detect-components.outputs.components) }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Read build config
+        id: config
+        run: |
+          CONFIG_FILE="${{ matrix.component }}/build-config.json"
+          if [ -f "$CONFIG_FILE" ]; then
+            BUILD_CMD=$(jq -r '.build' $CONFIG_FILE)
+            TEST_CMD=$(jq -r '.test' $CONFIG_FILE)
+          else
+            BUILD_CMD="echo 'No build step'"
+            TEST_CMD="echo 'No test step'"
+          fi
+          echo "build_cmd=$BUILD_CMD" >> $GITHUB_OUTPUT
+          echo "test_cmd=$TEST_CMD" >> $GITHUB_OUTPUT
+
+      - name: Build & Test Component
+        run: |
+          cd ${{ matrix.component }}
+          echo "Running build for ${{ matrix.component }}"
+          bash -c "${{ steps.config.outputs.build_cmd }}"
+
+          echo "Running tests for ${{ matrix.component }}"
+          bash -c "${{ steps.config.outputs.test_cmd }}"
