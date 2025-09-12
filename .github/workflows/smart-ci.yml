@@ -97,6 +97,7 @@ jobs:
     needs: detect-components
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         component: ${{ fromJson(needs.detect-components.outputs.components) }}
     steps:
@@ -135,7 +136,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         component: ${{ fromJson(needs.detect-components.outputs.components) }}
     steps:
