@@ -81,7 +81,8 @@ jobs:
           VALID_KEYS=$(echo $DEPS | jq -r 'keys[]')
           FILTERED=$(sort -u $COMPONENTS_FILE | grep -v '^$' | grep -Fxf <(echo "$VALID_KEYS"))
 
-          UNIQUE=$(echo "$FILTERED" | jq -R . | jq -s .)
+          # Create compact JSON array
+          UNIQUE=$(echo "$FILTERED" | jq -R . | jq -s -c .)
 
           if [ -z "$UNIQUE" ] || [ "$UNIQUE" = "[]" ]; then
             echo "⚠️ No impacted components detected."
