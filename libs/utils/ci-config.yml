@@ -1,0 +1,8 @@
+build: echo "Building utils library"
+
+tests:
+  unit: pytest tests/
+
+deploy:
+  staging: echo "Publishing utils to staging registry..."
+  production: echo "Publishing utils to production registry..."
