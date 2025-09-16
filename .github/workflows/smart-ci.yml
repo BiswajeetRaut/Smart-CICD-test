@@ -1,4 +1,4 @@
-name: Smart CI/CD (Enhanced)
+name: Smart CI/CD (Enhanced with API)
 
 on:
   push:
@@ -13,15 +13,15 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       components-json: ${{ steps.detect.outputs.components-json }}
-      has-changes: ${{ steps.detect.outputs.has-changes }}
+      has-changes: ${{ steps.changes.outputs.has-changes }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history for diffs
+          fetch-depth: 0
 
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y yq jq
+        run: sudo apt-get update && sudo apt-get install -y jq curl
 
       - name: Get changed files
         id: changes
@@ -30,19 +30,9 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE_SHA="${{ github.event.pull_request.base.sha }}"
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-            echo "PR detected: comparing $HEAD_SHA against $BASE_SHA"
             git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changes.txt
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
-              echo "New branch detected, comparing against main"
-              git diff --name-only origin/main...HEAD > changes.txt 2>/dev/null || git ls-files > changes.txt
-            else
-              echo "Regular push: comparing ${{ github.event.before }}..${{ github.event.after }}"
-              git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" > changes.txt
-            fi
           else
-            echo "Fallback: HEAD~1"
-            git diff --name-only HEAD~1 HEAD > changes.txt 2>/dev/null || git ls-files > changes.txt
+            git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" > changes.txt
           fi
 
           echo "Changed files:"
@@ -54,32 +44,50 @@ jobs:
             echo "has-changes=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Call Dependency Graph API
+        id: call-api
+        run: |
+          echo "📡 Calling Dependency Graph API..."
+          
+          API_URL="https://your-api-domain.com/analyze"
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          BRANCH="${{ github.ref_name }}"
+          COMMIT_SHA="${{ github.sha }}"
+
+          RESPONSE=$(curl -s -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"owner\": \"$OWNER\",
+              \"repo\": \"$REPO\",
+              \"branch\": \"$BRANCH\",
+              \"commit\": \"$COMMIT_SHA\"
+            }")
+
+          echo "API Response: $RESPONSE"
+
+          # Extract updated dependencies.json from API response
+          echo "$RESPONSE" | jq '.updated_dependencies' > dependencies.json
+
       - name: Detect impacted components
         id: detect
         run: |
           echo "### Detecting impacted components ###"
-          if [ ! -f "dependencies.json" ]; then
-            echo "{}" > dependencies.json
-          fi
-
-          CHANGED_FILES=$(cat changes.txt)
-          COMPONENTS_SET=$(mktemp)
-          DEPS=$(cat dependencies.json)
-          echo "Changed files analysis:" > impact.log
-
-          if [ ! -s changes.txt ]; then
+          
+          if [ ! -s dependencies.json ]; then
             echo "components-json=[]" >> $GITHUB_OUTPUT
-            echo "No changes detected" >> impact.log
             exit 0
           fi
 
+          DEPS=$(cat dependencies.json)
+          COMPONENTS_SET=$(mktemp)
+          echo "Changed files analysis:" > impact.log
+
           while IFS= read -r FILE; do
             [ -z "$FILE" ] && continue
-            echo "Analyzing: $FILE" >> impact.log
             DIR=$(dirname "$FILE")
             while [ "$DIR" != "/" ] && [ "$DIR" != "." ]; do
               if [ -f "$DIR/ci-config.yml" ]; then
-                echo "  Found component: $DIR" >> impact.log
                 echo "$DIR" >> "$COMPONENTS_SET"
                 break
               fi
@@ -87,54 +95,30 @@ jobs:
             done
           done < changes.txt
 
-          echo "" >> impact.log
-          echo "Dependency expansion:" >> impact.log
-          for PASS in 1 2 3; do
-            while IFS= read -r COMP; do
-              [ -z "$COMP" ] && continue
-              DEPENDENTS=$(echo "$DEPS" | jq -r --arg comp "$COMP" 'to_entries[] | select(.value | type == "array" and (. | index($comp))) | .key')
-              for DEPENDENT in $DEPENDENTS; do
-                if ! grep -Fxq "$DEPENDENT" "$COMPONENTS_SET"; then
-                  echo "  $COMP → $DEPENDENT" >> impact.log
-                  echo "$DEPENDENT" >> "$COMPONENTS_SET"
-                fi
-              done
-            done < <(sort -u "$COMPONENTS_SET")
-          done
-
+          # Expand dependencies with jq
           VALID_COMPONENTS=$(mktemp)
-          while IFS= read -r COMP; do
-            [ -z "$COMP" ] && continue
-            if [ -f "$COMP/ci-config.yml" ]; then
-              echo "$COMP" >> "$VALID_COMPONENTS"
-            else
-              echo "⚠️ Invalid component: $COMP" >> impact.log
-            fi
-          done < <(sort -u "$COMPONENTS_SET")
+          for COMP in $(sort -u "$COMPONENTS_SET"); do
+            echo "$COMP" >> "$VALID_COMPONENTS"
+            DEPENDENTS=$(echo "$DEPS" | jq -r --arg comp "$COMP" 'to_entries[] | select(.value | index($comp)) | .key')
+            for DEP in $DEPENDENTS; do
+              echo "$DEP" >> "$VALID_COMPONENTS"
+            done
+          done
 
           if [ -s "$VALID_COMPONENTS" ]; then
             COMPONENTS_ARRAY=$(sort -u "$VALID_COMPONENTS" | jq -R . | jq -s -c .)
           else
             COMPONENTS_ARRAY='["noop"]'
-            echo "No valid components, using noop" >> impact.log
           fi
 
           echo "components-json=$COMPONENTS_ARRAY" >> $GITHUB_OUTPUT
-          echo "" >> impact.log
-          echo "Final impacted components: $COMPONENTS_ARRAY" >> impact.log
+          echo "Final impacted components: $COMPONENTS_ARRAY"
 
       - name: Upload impact report
         uses: actions/upload-artifact@v4
         with:
           name: impact-report-${{ github.run_id }}
           path: impact.log
-
-      - name: Debug outputs
-        run: |
-          echo "=== DETECT DEBUG ==="
-          echo "Components JSON: ${{ steps.detect.outputs.components-json }}"
-          echo "Has changes: ${{ steps.detect.outputs.has-changes }}"
-          echo "==================="
 
   build:
     needs: detect-components
@@ -145,14 +129,6 @@ jobs:
       matrix:
         component: ${{ fromJson(needs.detect-components.outputs.components-json) }}
     steps:
-      - name: Debug matrix
-        run: |
-          echo "=== MATRIX DEBUG ==="
-          echo "Matrix component: ${{ matrix.component }}"
-          echo "All components (JSON): ${{ needs.detect-components.outputs.components-json }}"
-          echo "Has changes: ${{ needs.detect-components.outputs.has-changes }}"
-          echo "===================="
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -160,29 +136,20 @@ jobs:
         if: matrix.component != 'noop'
         run: sudo apt-get update && sudo apt-get install -y yq jq
 
-      - name: Skip if noop
-        if: matrix.component == 'noop'
-        run: echo "✅ No impacted components, skipping build."
-
       - name: Build & Run Tests
         if: matrix.component != 'noop'
         run: |
-          echo "============================"
-          echo "🏗️ Building component: ${{ matrix.component }}"
-          echo "============================"
           cd "${{ matrix.component }}"
           CONFIG="ci-config.yml"
           if [ -f "$CONFIG" ]; then
             BUILD_CMD=$(yq -r '.build' $CONFIG)
-            echo "🔨 Build: $BUILD_CMD"
             eval "$BUILD_CMD"
 
             TESTS=$(yq -r '.tests | keys[]' $CONFIG || true)
             for TEST in $TESTS; do
               CMD=$(yq -r ".tests[\"$TEST\"]" $CONFIG)
-              echo "🧪 Running $TEST tests: $CMD"
               eval "$CMD"
             done
           else
-            echo "⚠️ No ci-config.yml in ${{ matrix.component }}"
+            echo "⚠️ No ci-config.yml found in ${{ matrix.component }}"
           fi
